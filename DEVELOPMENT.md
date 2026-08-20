@@ -2,6 +2,14 @@
 
 > 本文件是开发文档。README.md 只保留安装、配置和日常使用说明；协议研究、架构决策、测试记录和迭代日志统一维护在这里。
 
+### 2026-08-21 — 修复活动 Visual / Visual Line 选区丢失
+
+- 根因是选区采集在 Visual 模式中读取 `'<`/`'>`：这两个标记只在 Visual 模式结束后更新，首次选择时为 `{0, 0}`，后续选择时则可能残留上一次范围，因此表现为偶发空选区或旧选区；`vim.fn.visualmode()` 同样返回上一次 Visual 模式，而非当前模式。
+- 活动选区现在读取实时锚点 `'v` 与当前窗口光标，并直接使用 `vim.fn.mode()` 区分字符、行和块选择；字符范围继续转换为 UTF-16 的 exclusive end，行选择使用下一行第 0 列作为 exclusive end。
+- 块选择同时改为逐行提取，避免把中间行的非选中内容包含进 selection text。
+- 新增真实 Neovim Visual 字符选择、`V` 多行选择，以及 `CursorMoved`/`ModeChanged` 经 80ms 合并后写入状态文件的回归测试。
+- 验证：`make test`，全部 14 项测试通过，其中包含 Claude `selection_changed` 消息的真实活动行选 payload。协议风险不变：Claude IDE WebSocket 是内部协议；本次修改只修正 provider 产生的编辑器范围，不改变传输格式。
+
 ### 2026-08-21 — 修复 Claude `ECONNRESET` 通知刷屏
 
 - Claude 启动和重连期间会产生短生命周期的 WebSocket 连接；peer reset 属于连接关闭事件，不应作为用户级错误反复通知。

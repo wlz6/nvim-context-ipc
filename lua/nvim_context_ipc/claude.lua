@@ -243,6 +243,7 @@ end
 M._all_tools = all_tools
 M._handle_connect = handle_connect
 M._on_message = on_message
+M._publish_selection = publish_selection
 M._replace_previous_clients = replace_previous_clients
 
 function M.server()

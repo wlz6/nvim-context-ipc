@@ -81,16 +81,20 @@ local function line_text(buffer, line)
   return vim.api.nvim_buf_get_lines(buffer, line, line + 1, false)[1] or ""
 end
 
-local function marks_selection(buffer)
-  local start_mark = vim.api.nvim_buf_get_mark(buffer, "<")
-  local end_mark = vim.api.nvim_buf_get_mark(buffer, ">")
-  if not start_mark or not end_mark or start_mark[1] <= 0 or end_mark[1] <= 0 then
+local function visual_selection(buffer, mode)
+  -- '< and '> are only updated after Visual mode ends. While a selection is
+  -- active, 'v is its live anchor and the window cursor is its live endpoint.
+  local anchor = vim.fn.getpos("v")
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  if not anchor or anchor[2] <= 0 then
     return nil
   end
-  local mode = vim.fn.visualmode()
-  local start_line, start_col = start_mark[1] - 1, start_mark[2]
-  local end_line, end_col = end_mark[1] - 1, end_mark[2]
-  if start_line > end_line or (start_line == end_line and start_col > end_col) then
+  local start_line, start_col = anchor[2] - 1, math.max(anchor[3] - 1, 0)
+  local end_line, end_col = cursor[1] - 1, cursor[2]
+  if mode == "\22" then
+    start_line, end_line = math.min(start_line, end_line), math.max(start_line, end_line)
+    start_col, end_col = math.min(start_col, end_col), math.max(start_col, end_col)
+  elseif start_line > end_line or (start_line == end_line and start_col > end_col) then
     start_line, end_line = end_line, start_line
     start_col, end_col = end_col, start_col
   end
@@ -102,11 +106,16 @@ local function marks_selection(buffer)
     text = util.text_from_lines(vim.api.nvim_buf_get_lines(buffer, start_line, end_line + 1, false))
     end_line = end_line + 1
   elseif mode == "\22" then
-    text = util.text_from_lines(vim.api.nvim_buf_get_text(buffer, start_line, start_col, end_line, end_col + 1, {}))
-    end_col = end_col + 1
+    local lines = {}
+    for line = start_line, end_line do
+      local value = line_text(buffer, line)
+      lines[#lines + 1] = value:sub(start_col + 1, math.min(end_col + 1, #value))
+    end
+    text = util.text_from_lines(lines)
+    end_col = math.min(end_col + 1, #line_text(buffer, end_line))
   else
-    text = util.text_from_lines(vim.api.nvim_buf_get_text(buffer, start_line, start_col, end_line, end_col + 1, {}))
-    end_col = end_col + 1
+    end_col = math.min(end_col + (vim.o.selection == "exclusive" and 0 or 1), #line_text(buffer, end_line))
+    text = util.text_from_lines(vim.api.nvim_buf_get_text(buffer, start_line, start_col, end_line, end_col, {}))
   end
 
   local start_text = line_text(buffer, start_line)
@@ -123,7 +132,7 @@ end
 local function active_selection(buffer)
   local mode = vim.fn.mode()
   if mode == "v" or mode == "V" or mode == "\22" then
-    return marks_selection(buffer)
+    return visual_selection(buffer, mode)
   end
   local cursor = vim.api.nvim_win_get_cursor(0)
   local text = line_text(buffer, cursor[1] - 1)

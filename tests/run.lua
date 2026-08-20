@@ -132,4 +132,87 @@ test("Context snapshot uses active in-memory buffer", function()
   assert(snapshot.activeFile.selection.start.character == 7)
 end)
 
+test("Context snapshot reads an active characterwise Visual selection", function()
+  local context = require("nvim_context_ipc.context")
+  local buffer = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_name(buffer, root .. "/tests/visual-character-fixture.lua")
+  vim.bo[buffer].buflisted = true
+  vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "alpha beta", "second line" })
+  vim.cmd("normal! gg0ve")
+  local snapshot = context.snapshot()
+  assert(snapshot.selection, "active Visual selection must be present")
+  assert(snapshot.selection.mode == "character")
+  assert(snapshot.selection.text == "alpha", "active Visual text must come from the live selection")
+  assert(snapshot.selection.start.line == 0 and snapshot.selection.start.character == 0)
+  assert(snapshot.selection["end"].line == 0 and snapshot.selection["end"].character == 5)
+  vim.cmd("normal! \27")
+end)
+
+test("Context snapshot reads an active Visual Line selection", function()
+  local context = require("nvim_context_ipc.context")
+  local buffer = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_name(buffer, root .. "/tests/visual-line-fixture.lua")
+  vim.bo[buffer].buflisted = true
+  vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "alpha", "beta", "gamma" })
+  vim.cmd("normal! ggVj")
+  local snapshot = context.snapshot()
+  assert(snapshot.selection, "active Visual Line selection must be present")
+  assert(snapshot.selection.mode == "line")
+  assert(snapshot.selection.text == "alpha\nbeta", "Visual Line text must include every selected line")
+  assert(snapshot.selection.start.line == 0 and snapshot.selection.start.character == 0)
+  assert(snapshot.selection["end"].line == 2 and snapshot.selection["end"].character == 0)
+  vim.cmd("normal! \27")
+end)
+
+test("Claude publishes the live Visual Line selection", function()
+  local claude = require("nvim_context_ipc.claude")
+  local buffer = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_name(buffer, root .. "/tests/claude-visual-line-fixture.lua")
+  vim.bo[buffer].buflisted = true
+  vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "first", "second", "third" })
+  vim.cmd("normal! ggVj")
+  local messages = {}
+  local client = { closed = false, mcp_ready = true }
+  function client:send_json(message) messages[#messages + 1] = message end
+  claude._publish_selection(client)
+  assert(#messages == 1 and messages[1].method == "selection_changed")
+  assert(messages[1].params.text == "first\nsecond")
+  assert(messages[1].params.selection.start.line == 0)
+  assert(messages[1].params.selection["end"].line == 2)
+  assert(messages[1].params.selection.isEmpty == false)
+  vim.cmd("normal! \27")
+end)
+
+test("Visual Line selection reaches the debounced publisher", function()
+  local plugin = require("nvim_context_ipc")
+  local buffer = vim.api.nvim_get_current_buf()
+  local state_path = vim.fn.tempname()
+  vim.api.nvim_buf_set_name(buffer, root .. "/tests/visual-publish-fixture.lua")
+  vim.bo[buffer].buflisted = true
+  vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "first", "second", "third" })
+  plugin.setup({
+    auto_start = false,
+    state_file = state_path,
+    codex = { enabled = false, auto_start = false },
+    claude = { enabled = false, auto_start = false },
+  })
+  vim.cmd("normal! ggVj")
+  local published
+  assert(vim.wait(500, function()
+    local content = require("nvim_context_ipc.util").read_file(state_path)
+    if not content then return false end
+    local ok, value = pcall(vim.json.decode, content)
+    if ok and value.selection and value.selection.text == "first\nsecond" then
+      published = value
+      return true
+    end
+    return false
+  end, 10), "Visual Line selection must reach the published context")
+  assert(published.selection.mode == "line")
+  assert(published.selection["end"].line == 2)
+  vim.cmd("normal! \27")
+  plugin.stop()
+  vim.fn.delete(state_path)
+end)
+
 print("all nvim-context-ipc tests passed")
