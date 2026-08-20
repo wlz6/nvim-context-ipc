@@ -6,6 +6,8 @@ local websocket = require("nvim_context_ipc.websocket")
 
 local M = {}
 local state = { opts = {}, server = nil, lock_path = nil, token = nil, pending = {}, started = false }
+local publish_selection
+local mark_mcp_ready
 
 local TOOL_SCHEMAS = {
   openFile = { description = "Open a file and optionally select text.", inputSchema = { type = "object", properties = { filePath = { type = "string" }, preview = { type = "boolean" }, startText = { type = "string" }, endText = { type = "string" }, selectToEndOfLine = { type = "boolean" }, makeFrontmost = { type = "boolean" } }, required = { "filePath" } } },
@@ -57,6 +59,15 @@ local function handle_initialize(client, message)
     capabilities = { tools = { listChanged = false } },
     serverInfo = { name = "ide", version = "0.1.0" },
   })
+  client.initialize_responded = true
+  -- MCP clients normally follow this with notifications/initialized. Keep a
+  -- delayed fallback for clients that omit that notification, but never send
+  -- editor notifications during the WebSocket handshake itself.
+  vim.defer_fn(function()
+    if not client.closed and client.initialize_responded and not client.mcp_ready then
+      mark_mcp_ready(client)
+    end
+  end, 1000)
 end
 
 local function handle_tool_call(client, message)
@@ -88,14 +99,18 @@ local function on_message(client, message)
   end
   local method = message.method
   if method == "initialize" then return handle_initialize(client, message) end
-  if method == "notifications/initialized" or method == "notifications/cancelled" then return end
+  if method == "notifications/initialized" then
+    return mark_mcp_ready(client)
+  end
+  if method == "notifications/cancelled" then return end
   if method == "ping" then return response(client, message.id, {}) end
   if method == "tools/list" then return response(client, message.id, { tools = all_tools() }) end
   if method == "tools/call" then return handle_tool_call(client, message) end
   if message.id ~= nil then return error_response(client, message.id, -32601, "Method not found: " .. tostring(method)) end
 end
 
-local function publish_selection(client)
+publish_selection = function(client)
+  if client.closed or not client.mcp_ready then return end
   local snapshot = context.snapshot()
   local file = snapshot.activeFile
   local selection = snapshot.selection
@@ -112,6 +127,34 @@ local function publish_selection(client)
   })
 end
 
+mark_mcp_ready = function(client)
+  if client.closed or client.mcp_ready then return end
+  client.mcp_ready = true
+  if client.initial_publish_scheduled then return end
+  client.initial_publish_scheduled = true
+  -- Match the official VS Code extension: let MCP finish its connection
+  -- bookkeeping before delivering the first selection notification.
+  vim.defer_fn(function()
+    client.initial_publish_scheduled = false
+    if not client.closed and client.mcp_ready then publish_selection(client) end
+  end, 500)
+end
+
+local function replace_previous_clients(clients, current)
+  for _, existing in pairs(clients or {}) do
+    if existing ~= current and not existing.closed then
+      existing:close(1000, "replaced by new Claude client")
+    end
+  end
+end
+
+local function handle_connect(client)
+  replace_previous_clients(state.server and state.server.clients, client)
+  client.mcp_ready = false
+  client.initialize_responded = false
+  client.initial_publish_scheduled = false
+end
+
 function M.publish()
   context.snapshot()
   if not state.server then return end
@@ -126,7 +169,9 @@ function M.at_mentioned(line_start, line_end)
   local start_line = tonumber(line_start) or (snapshot.selection and snapshot.selection.start.line) or 0
   local end_line = tonumber(line_end) or (snapshot.selection and snapshot.selection["end"].line) or start_line
   for _, client in pairs(state.server and state.server.clients or {}) do
-    client:send_json({ jsonrpc = "2.0", method = "at_mentioned", params = { filePath = snapshot.activeFile.fsPath, lineStart = start_line, lineEnd = end_line } })
+    if client.handshaken and client.mcp_ready then
+      client:send_json({ jsonrpc = "2.0", method = "at_mentioned", params = { filePath = snapshot.activeFile.fsPath, lineStart = start_line, lineEnd = end_line } })
+    end
   end
   return true
 end
@@ -152,9 +197,7 @@ function M.start(opts)
   local server = websocket.new({
     auth_token = nil,
     on_message = on_message,
-    on_connect = function(client)
-      publish_selection(client)
-    end,
+    on_connect = handle_connect,
     on_disconnect = function(client)
       for id, pending in pairs(state.pending) do
         if pending.client == client then
@@ -198,6 +241,9 @@ end
 
 -- Kept as a narrow test seam for validating the JSON sent by tools/list.
 M._all_tools = all_tools
+M._handle_connect = handle_connect
+M._on_message = on_message
+M._replace_previous_clients = replace_previous_clients
 
 function M.server()
   return state.server

@@ -4,10 +4,21 @@
 
 ### 2026-08-21 — Claude Code 2.1.226 WebSocket 兼容修复
 
-- 根据本机 Claude Code 2.1.226 的 IDE discovery 逻辑，lock file 除了旧版 `transport: "ws"` 外，还必须声明 `useWebSocket: true`；否则 CLI 会按 SSE 路径选择 provider。
-- 补充 `runningInWindows` 字段，保留 `transport` 以兼容仍读取旧 schema 的客户端。
+- 本机 Claude Code CLI 2.1.226 的 IDE discovery 逻辑包含 `useWebSocket` 分支；本机 VS Code 官方扩展 2.1.233 仍写入 `transport: "ws"`。为兼容 CLI 与官方扩展的版本差异，lock file 同时写入 `useWebSocket`、`runningInWindows` 和旧版 `transport`。
 - 修复 MCP `tools/list` 的空 schema：Lua 空表默认编码为 JSON 数组 `[]`，Claude 需要对象 `{}`，现在统一使用 `vim.empty_dict()`。
 - 新增 lock schema 和 tool schema 回归测试；使用真实 Claude Code + headless Neovim 验证 WebSocket 连接、`initialize` 和 `tools/list` 均成功，且不再出现 `tools/list failed`。
+
+### 2026-08-21 — 对照 VS Code 官方扩展修复连接时序
+
+本机安装的官方扩展为 `anthropic.claude-code-2.1.233`，其打包后的 provider 实现确认了以下行为：
+
+- WebSocket server 只接受 loopback 连接，校验 `x-claude-code-ide-authorization`，并且同一时间只保留一个客户端；新客户端连接时会关闭旧客户端。
+- lock file 使用 `process.ppid`、workspace folders、`ideName`、`transport: "ws"`、`runningInWindows` 和 `authToken`；端口从 10000–65535 的随机候选中逐个试用。
+- 连接后先让 MCP client 完成 `connect`（包括初始化），再延迟约 500ms 发送初始 selection 和积压事件；不能在 HTTP 101 刚完成时立刻发送 IDE notification。
+
+Neovim provider 现在采用同样的生命周期：WebSocket 握手阶段不发送 selection；收到 `notifications/initialized` 后才标记客户端 ready，并延迟 500ms 发布首个 selection；未发送该通知的客户端有 1 秒兼容 fallback；重连时关闭旧客户端；selection 和 `at_mentioned` 只发送给 ready 客户端。
+
+验证：`make test`、真实 Claude Code 2.1.226 + headless Neovim 三次连续连接/断开压力测试均通过，每次均完成 `ws-ide`、`initialize`、`tools/list`，无 `tools/list failed`、`Failed to fetch tools` 或异常断开。
 
 ### 2026-08-21 — Codex/Claude 原生连接故障修复
 
@@ -755,7 +766,7 @@ runningInWindows?: boolean
 authToken?: string
 ```
 
-上面的字段来自非官方源码参考；本机 Claude Code 2.1.226 的实际选择逻辑优先读取 `useWebSocket`，因此当前 provider 同时写入 `useWebSocket: true`、`runningInWindows` 和旧版 `transport`。
+上面的字段来自非官方源码参考；本机 CLI 2.1.226 和 VS Code 官方扩展 2.1.233 的字段存在版本差异，因此当前 provider 同时写入 `useWebSocket: true`、`runningInWindows` 和旧版 `transport`。
 
 对应的实现路径和职责如下：
 

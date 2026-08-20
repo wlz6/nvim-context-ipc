@@ -61,6 +61,43 @@ test("Claude tool schemas encode empty properties as objects", function()
   assert(not encoded:find('"properties":%[%]'), "empty MCP properties must encode as an object")
 end)
 
+test("Claude waits for MCP initialization before publishing selection", function()
+  local claude = require("nvim_context_ipc.claude")
+  local buffer = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_name(buffer, root .. "/tests/connection-fixture.lua")
+  vim.bo[buffer].buflisted = true
+  vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "return true" })
+  local messages = {}
+  local client = { handshaken = true, closed = false }
+  function client:send_json(message) messages[#messages + 1] = message end
+  claude._handle_connect(client)
+  assert(#messages == 0, "selection_changed must wait for MCP initialization")
+end)
+
+test("Claude marks the WebSocket ready after MCP initialized", function()
+  local claude = require("nvim_context_ipc.claude")
+  local messages = {}
+  local client = { handshaken = true, closed = false }
+  function client:send_json(message) messages[#messages + 1] = message end
+  claude._handle_connect(client)
+  claude._on_message(client, { jsonrpc = "2.0", id = 1, method = "initialize", params = {} })
+  assert(client.mcp_ready == false)
+  claude._on_message(client, { jsonrpc = "2.0", method = "notifications/initialized" })
+  assert(client.mcp_ready == true)
+  client.closed = true
+end)
+
+test("Claude keeps only the newest WebSocket client", function()
+  local claude = require("nvim_context_ipc.claude")
+  local previous = { closed = false }
+  function previous:close() self.closed = true end
+  local current = { closed = false }
+  function current:close() self.closed = true end
+  claude._replace_previous_clients({ previous = previous, current = current }, current)
+  assert(previous.closed == true)
+  assert(current.closed == false)
+end)
+
 test("Context snapshot uses active in-memory buffer", function()
   local context = require("nvim_context_ipc.context")
   local buffer = vim.api.nvim_get_current_buf()
