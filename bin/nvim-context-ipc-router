@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Small dependency-free Codex IDE IPC router for multiple Neovim providers."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+import threading
+import uuid
+from pathlib import Path
+
+
+MAX_FRAME = 256 * 1024 * 1024
+
+
+def frame(value: dict) -> bytes:
+    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(payload) > MAX_FRAME:
+        raise ValueError("IPC frame is too large")
+    return len(payload).to_bytes(4, "little") + payload
+
+
+def read_frame(conn: socket.socket) -> dict | None:
+    header = b""
+    while len(header) < 4:
+        chunk = conn.recv(4 - len(header))
+        if not chunk:
+            return None
+        header += chunk
+    length = int.from_bytes(header, "little")
+    if length > MAX_FRAME:
+        raise ValueError("IPC frame is too large")
+    payload = b""
+    while len(payload) < length:
+        chunk = conn.recv(min(1024 * 1024, length - len(payload)))
+        if not chunk:
+            return None
+        payload += chunk
+    value = json.loads(payload)
+    if not isinstance(value, dict):
+        raise ValueError("IPC payload must be an object")
+    return value
+
+
+class Router:
+    def __init__(self, codex_socket: Path, provider_socket: Path) -> None:
+        self.codex_socket = codex_socket
+        self.provider_socket = provider_socket
+        self.providers: dict[str, tuple[socket.socket, set[str]]] = {}
+        self.pending: dict[tuple[str, str], socket.socket] = {}
+        self.lock = threading.RLock()
+        self.stopping = False
+
+    @staticmethod
+    def owns_socket(path: Path) -> bool:
+        if not path.exists():
+            return False
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(0.15)
+            probe.connect(str(path))
+            return True
+        except OSError:
+            return False
+        finally:
+            probe.close()
+
+    def prepare_path(self, path: Path) -> None:
+        parent_existed = path.parent.exists()
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not parent_existed:
+            os.chmod(path.parent, 0o700)
+        if path.exists():
+            if self.owns_socket(path):
+                raise RuntimeError(f"socket is already in use: {path}")
+            path.unlink()
+
+    def send(self, conn: socket.socket, value: dict) -> None:
+        conn.sendall(frame(value))
+
+    def choose(self, workspace_root: str | None) -> str | None:
+        if not workspace_root:
+            return None
+        wanted = os.path.realpath(os.path.expanduser(workspace_root))
+        with self.lock:
+            for client_id, (_conn, roots) in self.providers.items():
+                if wanted in roots:
+                    return client_id
+        return None
+
+    def register(self, conn: socket.socket, message: dict) -> str:
+        client_id = str(message.get("clientId") or uuid.uuid4())
+        roots = {os.path.realpath(os.path.expanduser(root)) for root in message.get("workspaceRoots", []) if isinstance(root, str)}
+        with self.lock:
+            previous = self.providers.get(client_id)
+            if previous:
+                try:
+                    previous[0].close()
+                except OSError:
+                    pass
+            self.providers[client_id] = (conn, roots)
+        self.send(conn, {"type": "registered", "clientId": client_id})
+        return client_id
+
+    def provider_loop(self, conn: socket.socket, first: dict) -> None:
+        client_id = self.register(conn, first)
+        try:
+            while not self.stopping:
+                message = read_frame(conn)
+                if message is None:
+                    break
+                if message.get("type") == "update":
+                    roots = {os.path.realpath(os.path.expanduser(root)) for root in message.get("workspaceRoots", []) if isinstance(root, str)}
+                    with self.lock:
+                        if client_id in self.providers:
+                            self.providers[client_id] = (conn, roots)
+                elif message.get("type") == "response":
+                    key = (client_id, str(message.get("requestId")))
+                    with self.lock:
+                        target = self.pending.pop(key, None)
+                    if target:
+                        self.send(target, message)
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        finally:
+            with self.lock:
+                if self.providers.get(client_id, (None,))[0] is conn:
+                    del self.providers[client_id]
+                stale = [key for key in self.pending if key[0] == client_id]
+                for key in stale:
+                    target = self.pending.pop(key)
+                    try:
+                        self.send(target, {"type": "response", "requestId": key[1], "resultType": "error", "error": "client-disconnected"})
+                    except OSError:
+                        pass
+
+    def codex_loop(self, conn: socket.socket, first: dict) -> None:
+        try:
+            message = first
+            while not self.stopping:
+                kind = message.get("type")
+                if kind == "request":
+                    workspace = (message.get("params") or {}).get("workspaceRoot")
+                    client_id = self.choose(workspace)
+                    if client_id is None:
+                        self.send(conn, {"type": "response", "requestId": message.get("requestId"), "resultType": "error", "error": "no-client-found"})
+                    else:
+                        with self.lock:
+                            provider = self.providers.get(client_id)
+                            if provider:
+                                self.pending[(client_id, str(message.get("requestId")))] = conn
+                        if provider:
+                            self.send(provider[0], message)
+                        else:
+                            self.send(conn, {"type": "response", "requestId": message.get("requestId"), "resultType": "error", "error": "no-client-found"})
+                elif kind == "client-discovery-request":
+                    request = message.get("request") or {}
+                    workspace = (request.get("params") or {}).get("workspaceRoot")
+                    client_id = self.choose(workspace)
+                    self.send(conn, {"type": "client-discovery-response", "requestId": message.get("requestId"), "response": {"canHandle": client_id is not None, "clientId": client_id}})
+                message = read_frame(conn)
+                if message is None:
+                    break
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        finally:
+            with self.lock:
+                for key, target in list(self.pending.items()):
+                    if target is conn:
+                        self.pending.pop(key, None)
+
+    def accept_loop(self, listener: socket.socket, provider: bool) -> None:
+        while not self.stopping:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                break
+            thread = threading.Thread(target=self.handle_connection, args=(conn, provider), daemon=True)
+            thread.start()
+
+    def handle_connection(self, conn: socket.socket, provider: bool) -> None:
+        try:
+            first = read_frame(conn)
+            if first is None:
+                return
+            if provider and first.get("type") == "register":
+                self.provider_loop(conn, first)
+            else:
+                self.codex_loop(conn, first)
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def run(self) -> None:
+        self.prepare_path(self.codex_socket)
+        self.prepare_path(self.provider_socket)
+        codex_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        provider_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        codex_listener.bind(str(self.codex_socket))
+        provider_listener.bind(str(self.provider_socket))
+        codex_listener.listen(64)
+        provider_listener.listen(64)
+        os.chmod(self.codex_socket, 0o600)
+        os.chmod(self.provider_socket, 0o600)
+        threads = [
+            threading.Thread(target=self.accept_loop, args=(codex_listener, False), daemon=True),
+            threading.Thread(target=self.accept_loop, args=(provider_listener, True), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        try:
+            for thread in threads:
+                thread.join()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.stopping = True
+            codex_listener.close()
+            provider_listener.close()
+            for path in (self.codex_socket, self.provider_socket):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--codex-socket", default=os.getenv("CODEX_HOME", "~/.codex") + "/ipc/ipc.sock")
+    parser.add_argument("--provider-socket", default="~/.cache/nvim-context-ipc/providers.sock")
+    args = parser.parse_args()
+    Router(Path(args.codex_socket).expanduser(), Path(args.provider_socket).expanduser()).run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

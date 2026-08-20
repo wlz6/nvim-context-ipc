@@ -1,0 +1,6 @@
+.luacheckcache
+.stylua.toml
+__pycache__/
+*.swp
+*.swo
+.DS_Store
