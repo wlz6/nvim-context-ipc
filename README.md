@@ -23,7 +23,7 @@
 ## 默认行为
 
 - Claude provider：监听 `127.0.0.1` 随机端口，写入 `~/.claude/ide/<port>.lock`，自动发送选区更新；
-- Codex provider：尝试绑定 `$CODEX_HOME/ipc/ipc.sock`；若该 socket 已被 Codex 或其他进程占用，会拒绝覆盖并提示状态；
+- Codex provider：绑定 `$CODEX_HOME/ipc/ipc.sock`；陈旧且无法连接的 socket 会被安全清理，仍在使用的 socket 不会覆盖；
 - 文件路径默认限制在当前 workspace；
 - 文件打开、保存、diff 和关闭 tab 可用；
 - `executeCode` 默认关闭，避免客户端执行任意代码；启用后优先使用 Jupyter kernel，没有 `jupyter_client` 时降级为持久 Python worker。
@@ -93,6 +93,15 @@ codex = {
 :NvimContextRejectDiff [id]
 :NvimContextAtMention [lineStart] [lineEnd]
 ```
+
+启动顺序
+
+1. 先启动 Neovim 并打开项目；
+2. 在 Neovim 中确认 `:NvimContextStatus` 显示 `claude.running=true` 和 `codex.running=true`；
+3. 通过 Neovim 的 ClaudeCode 窗口启动 Claude Code（配置已自动加入 `--ide`），或在现有 Claude 会话中重新运行 `/ide`；
+4. 启动 Codex 后运行 `/ide`。
+
+如果手动从 shell 启动 Claude Code，请使用 `claude --ide`。Codex 和 Neovim 必须运行在同一个 WSL 环境中。
 
 ## Claude 工具
 

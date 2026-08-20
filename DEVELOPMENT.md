@@ -2,6 +2,12 @@
 
 > 本文件是开发文档。README.md 只保留安装、配置和日常使用说明；协议研究、架构决策、测试记录和迭代日志统一维护在这里。
 
+### 2026-08-21 — Codex/Claude 原生连接故障修复
+
+- `/home/sanzenin/.codex/ipc/ipc.sock` 可能残留为“文件存在但连接被拒绝”的陈旧 Unix socket。Codex provider 现在只在 `sockconnect` 失败且文件类型确实为 socket 时清理它；活动 socket、普通文件和其他进程拥有的 socket 都不会被覆盖。
+- `claude-code.nvim` 默认只执行 `claude`，不会主动选择 Neovim provider。用户配置现在使用 `claude --ide`；已有 Claude 会话需要重新运行 `/ide` 或重启终端。
+- 验收信号：Claude lock file 位于 `~/.claude/ide/<port>.lock`，其 loopback 端口可完成 WebSocket `101`、MCP `initialize` 和 `tools/list`；Codex socket 应能完成 4 字节 little-endian 长度帧的 `ide-context` 请求。stdio MCP 的 `connected` 状态不等价于上述原生 IDE provider 状态。
+
 ## 开发迭代日志
 
 ### 2026-08-21 — 首轮完整实现

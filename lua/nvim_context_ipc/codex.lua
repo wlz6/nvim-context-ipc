@@ -120,6 +120,13 @@ local function default_socket_path()
   return util.normalize_path(home .. "/ipc/ipc.sock")
 end
 
+local function socket_is_active(path)
+  local ok, channel = pcall(vim.fn.sockconnect, "pipe", path, { rpc = false })
+  if not ok or type(channel) ~= "number" or channel <= 0 then return false end
+  pcall(vim.fn.chanclose, channel)
+  return true
+end
+
 function M.start(opts)
   if state.started then return true end
   state.opts = opts or state.opts or {}
@@ -130,7 +137,16 @@ function M.start(opts)
   pcall(uv.fs_chmod, directory, 448)
   local stat = uv.fs_stat(path)
   if stat then
-    return false, "Codex IPC socket is already occupied: " .. path .. "; refusing to remove another process's socket"
+    if stat.type ~= "socket" then
+      return false, "Codex IPC path exists and is not a socket: " .. path
+    end
+    if socket_is_active(path) then
+      return false, "Codex IPC socket is already occupied: " .. path .. "; refusing to remove another process's socket"
+    end
+    local removed, remove_err = pcall(uv.fs_unlink, path)
+    if not removed then
+      return false, "Codex IPC socket is stale but could not be removed: " .. tostring(remove_err)
+    end
   end
   local pipe = uv.new_pipe(false)
   if not pipe then return false, "could not create Codex IPC pipe" end
