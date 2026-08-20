@@ -5,6 +5,42 @@ local jupyter = require("nvim_context_ipc.jupyter")
 local M = {}
 local state = { opts = {}, diffs = {}, sequence = 0, notify = function() end }
 
+-- This is the provider-neutral action contract. Claude MCP, dsh IPC, and any
+-- future agent adapter should invoke these names through M.invoke instead of
+-- maintaining a second list of editor capabilities.
+local TOOL_SCHEMAS = {
+  openFile = { description = "Open a file and optionally select text.", inputSchema = { type = "object", properties = { filePath = { type = "string" }, preview = { type = "boolean" }, startText = { type = "string" }, endText = { type = "string" }, selectToEndOfLine = { type = "boolean" }, makeFrontmost = { type = "boolean" } }, required = { "filePath" } } },
+  openDiff = { description = "Open proposed file contents in a native Neovim diff and wait for save or rejection.", inputSchema = { type = "object", properties = { old_file_path = { type = "string" }, new_file_path = { type = "string" }, new_file_contents = { type = "string" }, tab_name = { type = "string" } }, required = { "new_file_contents" } } },
+  getCurrentSelection = { description = "Read the current active editor selection.", inputSchema = { type = "object", properties = vim.empty_dict() } },
+  getLatestSelection = { description = "Read the most recent editor selection.", inputSchema = { type = "object", properties = vim.empty_dict() } },
+  getOpenEditors = { description = "List open Neovim file buffers.", inputSchema = { type = "object", properties = vim.empty_dict() } },
+  getWorkspaceFolders = { description = "List the current workspace folders.", inputSchema = { type = "object", properties = vim.empty_dict() } },
+  getDiagnostics = { description = "Read Neovim diagnostics for one file or all open files.", inputSchema = { type = "object", properties = { uri = { type = "string" } } } },
+  checkDocumentDirty = { description = "Check whether an open document has unsaved changes.", inputSchema = { type = "object", properties = { filePath = { type = "string" } }, required = { "filePath" } } },
+  saveDocument = { description = "Save an open document.", inputSchema = { type = "object", properties = { filePath = { type = "string" } }, required = { "filePath" } } },
+  closeAllDiffTabs = { description = "Close all nvim-context-ipc diff views.", inputSchema = { type = "object", properties = vim.empty_dict() } },
+  executeCode = { description = "Execute Python code in a persistent Jupyter kernel when available.", inputSchema = { type = "object", properties = { code = { type = "string" } }, required = { "code" } } },
+}
+
+local INTERNAL_TOOL_SCHEMAS = {
+  close_tab = { description = "Close a named Neovim tab/buffer.", inputSchema = { type = "object", properties = { tab_name = { type = "string" }, force = { type = "boolean" } }, required = { "tab_name" } } },
+}
+
+function M.tool_schemas(include_internal)
+  local names = {}
+  for name in pairs(TOOL_SCHEMAS) do names[#names + 1] = name end
+  if include_internal then
+    for name in pairs(INTERNAL_TOOL_SCHEMAS) do names[#names + 1] = name end
+  end
+  table.sort(names)
+  local result = {}
+  for _, name in ipairs(names) do
+    local schema = TOOL_SCHEMAS[name] or INTERNAL_TOOL_SCHEMAS[name]
+    result[#result + 1] = { name = name, description = schema.description, inputSchema = schema.inputSchema }
+  end
+  return result
+end
+
 local function permission(name)
   local permissions = state.opts.permissions or {}
   if permissions[name] == false then
@@ -334,7 +370,8 @@ function M.invoke(name, args, callback)
   elseif name == "close_tab" then
     local ok, result = close_tab(args); return ok, ok and result or result
   elseif name == "closeAllDiffTabs" then return true, close_all_diff_tabs()
-  elseif name == "openDiff" then return open_diff(args, callback)
+  elseif name == "openDiff" then
+    return open_diff(args, callback and function(status) callback(true, util.mcp_text(status)) end or nil)
   elseif name == "executeCode" then return execute_code(args, callback)
   end
   return false, "tool not found: " .. tostring(name)

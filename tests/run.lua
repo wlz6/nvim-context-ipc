@@ -19,6 +19,47 @@ test("Codex protocol round trip and partial frames", function()
   assert(bad == nil and bad_error)
 end)
 
+test("dsh IPC handler returns a versioned ping response", function()
+  local dsh = require("nvim_context_ipc.dsh")
+  local protocol = require("nvim_context_ipc.protocol")
+  local frames = {}
+  local client = { closed = false }
+  function client:send(value, callback)
+    frames[#frames + 1] = assert(protocol.encode(value))
+    if callback then callback() end
+  end
+  function client:close() self.closed = true end
+  dsh._handle_message(client, { id = "ping-1", method = "ping" })
+  local messages = assert(protocol.decode(table.concat(frames)))
+  assert(#messages == 1)
+  assert(messages[1].id == "ping-1" and messages[1].ok == true)
+  assert(messages[1].result.provider == "dsh")
+end)
+
+test("dsh provider owns and cleans up its private socket", function()
+  local dsh = require("nvim_context_ipc.dsh")
+  local path = vim.fn.tempname() .. ".sock"
+  local ok, err = dsh.start({ socket_path = path })
+  assert(ok, err)
+  assert(dsh.status().running == true and dsh.status().path == path)
+  dsh.stop()
+  assert(vim.uv.fs_stat(path) == nil)
+end)
+
+test("Codex provider uses the shared transport client contract", function()
+  local codex = require("nvim_context_ipc.codex")
+  local sent = {}
+  local client = { closed = false }
+  function client:send(value) sent[#sent + 1] = value end
+  codex.handle_message(client, {
+    type = "client-discovery-request",
+    requestId = "discovery-1",
+    request = { params = { workspaceRoot = root } },
+  })
+  assert(#sent == 1 and sent[1].type == "client-discovery-response")
+  assert(sent[1].requestId == "discovery-1" and sent[1].response.canHandle == true)
+end)
+
 test("SHA-1 and Base64 WebSocket primitives", function()
   local crypto = require("nvim_context_ipc.crypto")
   local digest = crypto.sha1("abc"):gsub(".", function(char) return string.format("%02x", string.byte(char)) end)
@@ -79,6 +120,38 @@ test("Claude tool schemas encode empty properties as objects", function()
   local claude = require("nvim_context_ipc.claude")
   local encoded = vim.json.encode({ tools = claude._all_tools() })
   assert(not encoded:find('"properties":%[%]'), "empty MCP properties must encode as an object")
+end)
+
+test("Claude exposes the shared provider-neutral action contract", function()
+  local actions = require("nvim_context_ipc.actions")
+  local claude = require("nvim_context_ipc.claude")
+  local shared, exposed = actions.tool_schemas(false), claude._all_tools()
+  assert(#shared == #exposed)
+  for index, schema in ipairs(shared) do
+    assert(schema.name == exposed[index].name, "Claude action schema drifted from actions.invoke")
+  end
+end)
+
+test("deferred diff callbacks use the common action result contract", function()
+  local actions = require("nvim_context_ipc.actions")
+  local buffer = vim.api.nvim_get_current_buf()
+  local old_path = root .. "/tests/diff-old-fixture.lua"
+  local new_path = root .. "/tests/diff-new-fixture.lua"
+  vim.api.nvim_buf_set_name(buffer, old_path)
+  vim.bo[buffer].buflisted = true
+  vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "old" })
+  local callback_ok, callback_value
+  local ok, pending = actions.invoke("openDiff", {
+    old_file_path = old_path,
+    new_file_path = new_path,
+    new_file_contents = "new\n",
+  }, function(result_ok, result_value)
+    callback_ok, callback_value = result_ok, result_value
+  end)
+  assert(ok and pending.deferred)
+  assert(actions.reject_diff(pending.id))
+  assert(callback_ok == true)
+  assert(callback_value.content[1].text == "DIFF_REJECTED")
 end)
 
 test("Claude waits for MCP initialization before publishing selection", function()

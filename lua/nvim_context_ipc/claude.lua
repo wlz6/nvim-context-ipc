@@ -9,24 +9,6 @@ local state = { opts = {}, server = nil, lock_path = nil, token = nil, pending =
 local publish_selection
 local mark_mcp_ready
 
-local TOOL_SCHEMAS = {
-  openFile = { description = "Open a file and optionally select text.", inputSchema = { type = "object", properties = { filePath = { type = "string" }, preview = { type = "boolean" }, startText = { type = "string" }, endText = { type = "string" }, selectToEndOfLine = { type = "boolean" }, makeFrontmost = { type = "boolean" } }, required = { "filePath" } } },
-  openDiff = { description = "Open proposed file contents in a native Neovim diff and wait for save or rejection.", inputSchema = { type = "object", properties = { old_file_path = { type = "string" }, new_file_path = { type = "string" }, new_file_contents = { type = "string" }, tab_name = { type = "string" } }, required = { "new_file_contents" } } },
-  getCurrentSelection = { description = "Read the current active editor selection.", inputSchema = { type = "object", properties = vim.empty_dict() } },
-  getLatestSelection = { description = "Read the most recent editor selection.", inputSchema = { type = "object", properties = vim.empty_dict() } },
-  getOpenEditors = { description = "List open Neovim file buffers.", inputSchema = { type = "object", properties = vim.empty_dict() } },
-  getWorkspaceFolders = { description = "List the current workspace folders.", inputSchema = { type = "object", properties = vim.empty_dict() } },
-  getDiagnostics = { description = "Read Neovim diagnostics for one file or all open files.", inputSchema = { type = "object", properties = { uri = { type = "string" } } } },
-  checkDocumentDirty = { description = "Check whether an open document has unsaved changes.", inputSchema = { type = "object", properties = { filePath = { type = "string" } }, required = { "filePath" } } },
-  saveDocument = { description = "Save an open document.", inputSchema = { type = "object", properties = { filePath = { type = "string" } }, required = { "filePath" } } },
-  closeAllDiffTabs = { description = "Close all nvim-context-ipc diff views.", inputSchema = { type = "object", properties = vim.empty_dict() } },
-  executeCode = { description = "Execute Python code in a persistent Jupyter kernel when available.", inputSchema = { type = "object", properties = { code = { type = "string" } }, required = { "code" } } },
-}
-
-local INTERNAL_TOOLS = {
-  close_tab = { description = "Close a named Neovim tab/buffer.", inputSchema = { type = "object", properties = { tab_name = { type = "string" }, force = { type = "boolean" } }, required = { "tab_name" } } },
-}
-
 local function response(client, id, result)
   if id == nil then return end
   client:send_json({ jsonrpc = "2.0", id = id, result = result })
@@ -38,18 +20,7 @@ local function error_response(client, id, code, message, data)
 end
 
 local function all_tools()
-  local result = {}
-  local names = {}
-  for name in pairs(TOOL_SCHEMAS) do names[#names + 1] = name end
-  if state.opts.expose_internal_tools then
-    for name in pairs(INTERNAL_TOOLS) do names[#names + 1] = name end
-  end
-  table.sort(names)
-  for _, name in ipairs(names) do
-    local schema = TOOL_SCHEMAS[name] or INTERNAL_TOOLS[name]
-    result[#result + 1] = { name = name, description = schema.description, inputSchema = schema.inputSchema }
-  end
-  return result
+  return actions.tool_schemas(state.opts.expose_internal_tools)
 end
 
 local function handle_initialize(client, message)
@@ -77,11 +48,7 @@ local function handle_tool_call(client, message)
   local callback
   callback = function(first, second)
     if not client or client.closed then return end
-    if params.name == "executeCode" then
-      if first then response(client, message.id, second) else error_response(client, message.id, -32000, tostring(second)) end
-    else
-      response(client, message.id, util.mcp_text(first))
-    end
+    if first then response(client, message.id, second) else error_response(client, message.id, -32000, tostring(second)) end
     state.pending[pending_key] = nil
   end
   local ok, result = actions.invoke(params.name, params.arguments or {}, callback)

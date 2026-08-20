@@ -1,0 +1,26 @@
+{
+  "name": "dsh-nvim-context-ipc",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness bundle for the nvim-context-ipc Unix socket provider",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wlz6/nvim-context-ipc.git"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.5"
+  }
+}

@@ -1,9 +1,7 @@
 local actions = require("nvim_context_ipc.actions")
-local claude = require("nvim_context_ipc.claude")
-local codex = require("nvim_context_ipc.codex")
-local codex_client = require("nvim_context_ipc.codex_client")
 local context = require("nvim_context_ipc.context")
 local jupyter = require("nvim_context_ipc.jupyter")
+local providers = require("nvim_context_ipc.providers")
 local util = require("nvim_context_ipc.util")
 
 local M = {}
@@ -29,6 +27,12 @@ local defaults = {
     auto_start = true,
     socket_path = nil,
   },
+  dsh = {
+    enabled = true,
+    auto_start = true,
+    socket_path = nil,
+    backlog = 64,
+  },
   claude = {
     enabled = true,
     auto_start = true,
@@ -42,8 +46,7 @@ local defaults = {
 
 local function publish()
   context.publish_state(state.opts.state_file)
-  claude.publish()
-  if state.opts.codex.mode == "router" then codex_client.publish() end
+  providers.publish(state.opts)
 end
 
 local function schedule_publish()
@@ -59,15 +62,7 @@ local function command(name, callback, opts)
 end
 
 local function start_services()
-  if state.opts.claude.enabled and state.opts.claude.auto_start then
-    local ok, err = claude.start(state.opts.claude)
-    if not ok then util.notify("Claude IDE context is unavailable: " .. tostring(err), vim.log.levels.WARN) end
-  end
-  if state.opts.codex.enabled and state.opts.codex.auto_start then
-    local adapter = state.opts.codex.mode == "router" and codex_client or codex
-    local ok, err = adapter.start(state.opts.codex)
-    if not ok then util.notify("Codex IDE context is unavailable: " .. tostring(err), vim.log.levels.WARN) end
-  end
+  providers.start(state.opts, true, util.notify, vim.log.levels.WARN)
 end
 
 function M.setup(opts)
@@ -101,11 +96,7 @@ function M.setup(opts)
   })
 
   command("NvimContextStart", function()
-    local ok, err = claude.start(state.opts.claude)
-    if not ok then util.notify("Claude: " .. tostring(err), vim.log.levels.ERROR) end
-    local adapter = state.opts.codex.mode == "router" and codex_client or codex
-    ok, err = adapter.start(state.opts.codex)
-    if not ok then util.notify("Codex: " .. tostring(err), vim.log.levels.ERROR) end
+    providers.start(state.opts, false, util.notify, vim.log.levels.ERROR)
   end, { desc = "Start nvim-context-ipc providers" })
   command("NvimContextStop", M.stop, { desc = "Stop nvim-context-ipc providers" })
   command("NvimContextPublish", publish, { desc = "Publish the current Neovim context" })
@@ -130,7 +121,7 @@ function M.setup(opts)
   end, { nargs = "?", desc = "Reject a pending Claude diff" })
   command("NvimContextAtMention", function(params)
     local start_line, end_line = params.fargs[1], params.fargs[2]
-    claude.at_mentioned(start_line, end_line)
+    providers.at_mentioned(start_line, end_line)
   end, { nargs = "*", desc = "Send the active range to Claude Code" })
 
   if state.opts.auto_start then start_services() end
@@ -144,15 +135,12 @@ end
 
 function M.stop()
   if state.timer then state.timer:stop(); state.timer = nil end
-  claude.stop()
-  codex.stop()
-  codex_client.stop()
+  providers.stop()
   jupyter.stop()
 end
 
 function M.status()
-  local codex_status = state.opts.codex.mode == "router" and codex_client.status() or codex.status()
-  return { claude = claude.status(), codex = codex_status, snapshot = context.snapshot() }
+  return { providers = providers.status(state.opts), snapshot = context.snapshot() }
 end
 
 function M.snapshot(options)
