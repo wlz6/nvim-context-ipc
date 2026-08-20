@@ -3,6 +3,7 @@ local util = require("nvim_context_ipc.util")
 
 local uv = util.uv
 local M = {}
+local unpack_args = table.unpack or unpack
 
 local Server = {}
 Server.__index = Server
@@ -44,6 +45,12 @@ local function send(client, value, on_written)
   return true
 end
 
+local function schedule_callback(callback, ...)
+  if not callback then return end
+  local args = { ... }
+  vim.schedule(function() callback(unpack_args(args)) end)
+end
+
 function M.new(opts)
   opts = opts or {}
   local server = setmetatable({
@@ -83,10 +90,10 @@ function Server:_accept_client()
     self.closed = true
     self.server.clients[self] = nil
     close_handle(self.handle)
-    if self.server.opts.on_disconnect then self.server.opts.on_disconnect(self, reason) end
+    schedule_callback(self.server.opts.on_disconnect, self, reason)
   end
 
-  if self.opts.on_connect then self.opts.on_connect(client) end
+  schedule_callback(self.opts.on_connect, client)
   handle:read_start(function(read_err, data)
     if client.closed then return end
     if read_err then client:close(read_err); return end
@@ -164,6 +171,132 @@ function Server:status()
   local clients = 0
   for _ in pairs(self.clients) do clients = clients + 1 end
   return { running = self.started, path = self.path, clients = clients }
+end
+
+local Client = {}
+Client.__index = Client
+
+function Client:_close(reason, notify)
+  if self.closed then return end
+  self.closed = true
+  self.connected = false
+  self.connecting = false
+  close_handle(self.pipe)
+  self.pipe = nil
+  self.started = false
+  if notify ~= false then schedule_callback(self.opts.on_disconnect, self, reason) end
+end
+
+function Client:_read(chunk)
+  if self.closed then return end
+  self.buffer = self.buffer .. chunk
+  local messages, remainder = protocol.decode(self.buffer)
+  if not messages then
+    self:_close(remainder or "invalid client frame")
+    return
+  end
+  self.buffer = remainder
+  for _, message in ipairs(messages) do
+    vim.schedule(function()
+      if not self.closed and self.opts.on_message then
+        self.opts.on_message(self, message)
+      end
+    end)
+  end
+end
+
+function Client:start()
+  if self.started then return true end
+  if vim.fn.has("win32") == 1 then
+    return false, self.name .. " Unix socket mode is not implemented on Windows in this release"
+  end
+  local path = util.normalize_path(self.opts.socket_path)
+  if not path then return false, self.name .. " socket_path is invalid" end
+  local pipe = uv.new_pipe(false)
+  if not pipe then return false, "could not create " .. self.name .. " pipe" end
+  self.path = path
+  self.pipe = pipe
+  self.buffer = ""
+  self.closed = false
+  self.started = true
+  self.connecting = true
+  local ok, err = pcall(function()
+    pipe:connect(path, function(connect_err)
+      if self.closed then return end
+      if connect_err then
+        self:_close(connect_err)
+        return
+      end
+      self.connecting = false
+      self.connected = true
+      local read_ok, read_err = pipe:read_start(function(read_err, data)
+        if self.closed then return end
+        if read_err then self:_close(read_err); return end
+        if not data then self:_close("EOF"); return end
+        self:_read(data)
+      end)
+      if not read_ok then self:_close(read_err or "could not read socket"); return end
+      schedule_callback(self.opts.on_connect, self)
+    end)
+  end)
+  if not ok then
+    self:_close(err)
+    return false, err
+  end
+  return true
+end
+
+function Client:send(value, callback)
+  if self.closed or not self.connected or not self.pipe then
+    return false, "client is not connected"
+  end
+  return send(self, value, callback)
+end
+
+function Client:write(data, callback)
+  if self.closed or not self.pipe then
+    if callback then callback("client is closed") end
+    return false
+  end
+  self.pipe:write(data, callback)
+  return true
+end
+
+function Client:close(reason)
+  self:_close(reason or "client closed", false)
+end
+
+function Client:stop()
+  self:_close("client stopped", false)
+  self.path = nil
+end
+
+function Client:status()
+  return {
+    running = self.started,
+    connected = self.connected,
+    connecting = self.connecting,
+    path = self.path,
+    clients = 0,
+  }
+end
+
+function M.new_client(opts)
+  opts = opts or {}
+  return setmetatable({
+    name = opts.name or "IPC client",
+    opts = opts,
+    keep_alive = opts.keep_alive == true,
+    queue = {},
+    writing = false,
+    pipe = nil,
+    path = nil,
+    buffer = "",
+    started = false,
+    connecting = false,
+    connected = false,
+    closed = true,
+  }, Client)
 end
 
 M._socket_is_active = socket_is_active

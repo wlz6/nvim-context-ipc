@@ -31,7 +31,9 @@ local defaults = {
     enabled = true,
     auto_start = true,
     socket_path = nil,
-    backlog = 64,
+    ide_id = nil,
+    ide_name = "Neovim",
+    reconnect_delay_ms = 1000,
   },
   claude = {
     enabled = true,

@@ -23,7 +23,7 @@ test("dsh IPC handler returns a versioned ping response", function()
   local dsh = require("nvim_context_ipc.dsh")
   local protocol = require("nvim_context_ipc.protocol")
   local frames = {}
-  local client = { closed = false }
+  local client = { closed = false, keep_alive = true }
   function client:send(value, callback)
     frames[#frames + 1] = assert(protocol.encode(value))
     if callback then callback() end
@@ -36,14 +36,25 @@ test("dsh IPC handler returns a versioned ping response", function()
   assert(messages[1].result.provider == "dsh")
 end)
 
-test("dsh provider owns and cleans up its private socket", function()
+test("dsh provider is a reconnecting socket client", function()
   local dsh = require("nvim_context_ipc.dsh")
   local path = vim.fn.tempname() .. ".sock"
   local ok, err = dsh.start({ socket_path = path })
   assert(ok, err)
-  assert(dsh.status().running == true and dsh.status().path == path)
+  assert(dsh.status().running == true and dsh.status().connected == false and dsh.status().path == path)
   dsh.stop()
   assert(vim.uv.fs_stat(path) == nil)
+end)
+
+test("shared transport exposes a persistent client contract", function()
+  local transport = require("nvim_context_ipc.transport")
+  local path = vim.fn.tempname() .. ".sock"
+  local client = transport.new_client({ name = "test IPC", socket_path = path })
+  assert(client:status().running == false)
+  local ok = client:start()
+  assert(ok and client:status().running == true and client:status().connected == false)
+  client:stop()
+  assert(client:status().running == false)
 end)
 
 test("Codex provider uses the shared transport client contract", function()
