@@ -188,19 +188,35 @@ function Client:send_json(value, callback)
   self:send_text(text, callback)
 end
 
+local function finalize_client(client, code, reason)
+  if client.closed then return false end
+  client.closed = true
+  client.write_queue = {}
+  if client.tcp and not client.tcp:is_closing() then
+    pcall(client.tcp.read_stop, client.tcp)
+  end
+  if client.server and client.server.clients[client.id] then
+    client.server.clients[client.id] = nil
+    vim.schedule(function()
+      client.server.on_disconnect(client, code, reason)
+    end)
+  end
+  return true
+end
+
+function Client:terminate(code, reason)
+  if not finalize_client(self, code or 1006, reason) then return end
+  close_handle(self.tcp)
+end
+
 function Client:close(code, reason)
-  if self.closed then return end
-  self.closed = true
+  code = code or 1000
+  if code == 1006 then return self:terminate(code, reason) end
+  if not finalize_client(self, code, reason) then return end
   if self.tcp and not self.tcp:is_closing() then
-    local payload = string.char(math.floor((code or 1000) / 256), (code or 1000) % 256) .. (reason or "")
+    local payload = string.char(math.floor(code / 256), code % 256) .. (reason or "")
     local data = frame(8, payload, false)
     self.tcp:write(data, function() close_handle(self.tcp) end)
-  end
-  if self.server and self.server.clients[self.id] then
-    self.server.clients[self.id] = nil
-    vim.schedule(function()
-      self.server.on_disconnect(self, code, reason)
-    end)
   end
 end
 
@@ -254,6 +270,55 @@ function Server.new(opts)
   return server
 end
 
+local function expected_disconnect_error(err)
+  return tostring(err):upper():find("ECONNRESET", 1, true) ~= nil
+end
+
+local function handle_read(server, client, read_err, data)
+  if client.closed then return end
+  if read_err then
+    if not expected_disconnect_error(read_err) then server.on_error(read_err) end
+    client:terminate(1006, read_err)
+    return
+  end
+  if not data then
+    client:terminate(1006, "EOF")
+    return
+  end
+  if not client.handshaken then
+    client.http_buffer = client.http_buffer .. data
+    if #client.http_buffer > MAX_HTTP_BYTES then
+      client:terminate(1002, "HTTP request too large")
+      return
+    end
+    local end_at = client.http_buffer:find("\r\n\r\n", 1, true)
+    if not end_at then return end
+    local request = client.http_buffer:sub(1, end_at + 3)
+    client.ws_buffer = client.http_buffer:sub(end_at + 4)
+    local info, response = handshake(request, server.opts.auth_token)
+    if not info then
+      client.tcp:write(response or "HTTP/1.1 400 Bad Request\r\n\r\n", function()
+        client:terminate(1002, "handshake failed")
+      end)
+      return
+    end
+    client.handshaken = true
+    client.path = info.path
+    client.tcp:write(response)
+    vim.schedule(function()
+      if not client.closed then server.on_connect(client, info) end
+    end)
+  else
+    client.ws_buffer = client.ws_buffer .. data
+  end
+  if client.handshaken then
+    local frames, remainder = parse_frames(client.ws_buffer)
+    if not frames then return client:close(1009, remainder) end
+    client.ws_buffer = remainder
+    for _, item in ipairs(frames) do client:handle_frame(item) end
+  end
+end
+
 function Server:_accept()
   local tcp = uv.new_tcp()
   if not tcp then return self.on_error("could not create WebSocket client") end
@@ -268,45 +333,7 @@ function Server:_accept()
   }, Client)
   self.clients[client.id] = client
   tcp:read_start(function(read_err, data)
-    if read_err then
-      self.on_error(read_err)
-      client:close(1006, read_err)
-      return
-    end
-    if not data then
-      client:close(1006, "EOF")
-      return
-    end
-    if not client.handshaken then
-      client.http_buffer = client.http_buffer .. data
-      if #client.http_buffer > MAX_HTTP_BYTES then
-        client:close(1009, "HTTP request too large")
-        return
-      end
-      local end_at = client.http_buffer:find("\r\n\r\n", 1, true)
-      if not end_at then return end
-      local request = client.http_buffer:sub(1, end_at + 3)
-      client.ws_buffer = client.http_buffer:sub(end_at + 4)
-      local info, response = handshake(request, self.opts.auth_token)
-      if not info then
-        tcp:write(response or "HTTP/1.1 400 Bad Request\r\n\r\n", function() client:close(1002, "handshake failed") end)
-        return
-      end
-      client.handshaken = true
-      client.path = info.path
-      tcp:write(response)
-      vim.schedule(function()
-        if not client.closed then self.on_connect(client, info) end
-      end)
-    else
-      client.ws_buffer = client.ws_buffer .. data
-    end
-    if client.handshaken then
-      local frames, remainder = parse_frames(client.ws_buffer)
-      if not frames then return client:close(1009, remainder) end
-      client.ws_buffer = remainder
-      for _, item in ipairs(frames) do client:handle_frame(item) end
-    end
+    handle_read(self, client, read_err, data)
   end)
 end
 
@@ -342,5 +369,6 @@ M.new = Server.new
 M._parse_frames = parse_frames
 M._handshake = handshake
 M._frame = frame
+M._handle_read = handle_read
 
 return M

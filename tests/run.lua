@@ -41,6 +41,26 @@ test("WebSocket handshake validates the Claude token", function()
   assert(rejected == nil)
 end)
 
+test("WebSocket reset closes once without warning spam", function()
+  local websocket = require("nvim_context_ipc.websocket")
+  local warnings = {}
+  local closes = 0
+  local server = { on_error = function(err) warnings[#warnings + 1] = err end }
+  local client = { closed = false }
+  function client:terminate()
+    if self.closed then return end
+    self.closed = true
+    closes = closes + 1
+  end
+  websocket._handle_read(server, client, "ECONNRESET", nil)
+  websocket._handle_read(server, client, "ECONNRESET", nil)
+  assert(closes == 1, "reset client must close exactly once")
+  assert(#warnings == 0, "ECONNRESET is a normal peer disconnect")
+  local unexpected = { closed = false, terminate = client.terminate }
+  websocket._handle_read(server, unexpected, "EINVAL", nil)
+  assert(#warnings == 1 and warnings[1] == "EINVAL", "unexpected read errors must still be reported")
+end)
+
 test("Claude lock file advertises the WebSocket transport", function()
   local lockfile = require("nvim_context_ipc.lockfile")
   local directory = vim.fn.tempname()

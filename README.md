@@ -105,6 +105,8 @@ codex = {
 
 插件更新后请先完全重启 Neovim 以加载新的 Lua 模块；运行期间仅需重连时，可执行 `:NvimContextStop`，再执行 `:NvimContextStart`，然后在 Claude 中重新运行 `/ide`。`:NvimContextStatus` 应显示 `claude.clients=1`。同一 workspace 同时只保留一个 Neovim IDE provider。
 
+Claude 启动或重连时产生的短暂 `ECONNRESET` 属于 peer disconnect，插件会静默清理；只有其它非预期 WebSocket 错误才会显示通知。
+
 ## Claude 工具
 
 支持 `openFile`、`openDiff`、`getCurrentSelection`、`getLatestSelection`、`getOpenEditors`、`getWorkspaceFolders`、`getDiagnostics`、`checkDocumentDirty`、`saveDocument`、`closeAllDiffTabs` 和 `executeCode`。`close_tab` 默认隐藏，可通过 `claude.expose_internal_tools = true` 暴露。

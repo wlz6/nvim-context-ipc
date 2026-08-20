@@ -2,6 +2,14 @@
 
 > 本文件是开发文档。README.md 只保留安装、配置和日常使用说明；协议研究、架构决策、测试记录和迭代日志统一维护在这里。
 
+### 2026-08-21 — 修复 Claude `ECONNRESET` 通知刷屏
+
+- Claude 启动和重连期间会产生短生命周期的 WebSocket 连接；peer reset 属于连接关闭事件，不应作为用户级错误反复通知。
+- 原 WebSocket read callback 未先检查 `client.closed`，并在 reset/EOF 后尝试发送关闭码 `1006`。RFC 6455 的 `1006` 只能用于本地表示异常关闭，不能出现在 close frame 中；对已 reset 的 socket 再写 close frame 还会制造额外错误。
+- 新增无写入的 `terminate` 路径：先同步标记 closed、停止读取、移除 client，再关闭 TCP handle；重复 read callback 会被 closed guard 忽略。
+- 握手失败现在只返回 HTTP 错误后终止 TCP，不再在尚未升级的连接后追加 WebSocket close frame；其它非预期 read error 仍会进入 `on_error`。
+- 回归验证：`make test`；20 次真实 TCP RST 后 warning 为 0、残留 client 为 0；真实 Claude Code 2.1.226 连续连接/退出三次，均完成 `ws-ide` 和 `tools/list` 并干净断开。
+
 ### 2026-08-21 — Claude Code 2.1.226 WebSocket 兼容修复
 
 - 本机 Claude Code CLI 2.1.226 的 IDE discovery 逻辑包含 `useWebSocket` 分支；本机 VS Code 官方扩展 2.1.233 仍写入 `transport: "ws"`。为兼容 CLI 与官方扩展的版本差异，lock file 同时写入 `useWebSocket`、`runningInWindows` 和旧版 `transport`。
