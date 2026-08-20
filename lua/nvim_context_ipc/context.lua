@@ -209,6 +209,14 @@ function M.setup(opts)
   state.opts = opts or {}
 end
 
+function M.publish_state(path)
+  local state_path = path or state.opts.state_file or "~/.cache/nvim-context-ipc/context.json"
+  local snapshot = M.snapshot({ include_buffer_text = state.opts.publish_buffer_text ~= false })
+  local ok, err = util.write_file_atomic(util.normalize_path(state_path), util.json_encode(snapshot), 384)
+  if not ok then return nil, err end
+  return snapshot, util.normalize_path(state_path)
+end
+
 function M.snapshot(options)
   options = options or {}
   local buffer = options.buffer or vim.api.nvim_get_current_buf()

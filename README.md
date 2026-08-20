@@ -27,6 +27,7 @@
 - 文件路径默认限制在当前 workspace；
 - 文件打开、保存、diff 和关闭 tab 可用；
 - `executeCode` 默认关闭，避免客户端执行任意代码；启用后优先使用 Jupyter kernel，没有 `jupyter_client` 时降级为持久 Python worker。
+- 只读 stdio MCP bridge：`bin/nvim-context-ipc-mcp`，供需要显式 MCP 配置的 Codex/Claude 会话读取同一份内存快照。
 
 ## 配置
 
@@ -53,6 +54,17 @@ require("nvim_context_ipc").setup({
   },
 })
 ```
+
+### 显式 MCP 配置
+
+如果客户端不使用原生 IDE provider，可将下面的命令注册为只读 MCP：
+
+```bash
+codex mcp add nvim-context -- /home/sanzenin/test/nvim-context-ipc/bin/nvim-context-ipc-mcp
+claude mcp add --scope user nvim-context -- /home/sanzenin/test/nvim-context-ipc/bin/nvim-context-ipc-mcp
+```
+
+Neovim 会将状态写入 `~/.cache/nvim-context-ipc/context.json`，目录权限为 `0700`，状态文件权限为 `0600`。
 
 已有 Codex router 或需要多个 Neovim 实例时，先启动：
 

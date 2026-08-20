@@ -12,6 +12,8 @@ local state = { configured = false, opts = {}, timer = nil }
 local defaults = {
   auto_start = true,
   include_buffer_text = false,
+  publish_buffer_text = true,
+  state_file = "~/.cache/nvim-context-ipc/context.json",
   max_buffer_bytes = 1024 * 1024,
   permissions = {
     restrict_to_workspace = true,
@@ -39,7 +41,7 @@ local defaults = {
 }
 
 local function publish()
-  context.snapshot()
+  context.publish_state(state.opts.state_file)
   claude.publish()
   if state.opts.codex.mode == "router" then codex_client.publish() end
 end

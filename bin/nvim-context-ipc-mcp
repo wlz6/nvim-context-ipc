@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Read-only stdio MCP bridge for the nvim-context-ipc Neovim snapshot."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+
+STATE_PATH = Path(os.environ.get("NVIM_CONTEXT_IPC_STATE", "~/.cache/nvim-context-ipc/context.json")).expanduser()
+MAX_STATE_BYTES = 4 * 1024 * 1024
+
+
+def send(value: dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def result(request_id: Any, value: Any) -> None:
+    send({"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False, indent=2)}]}})
+
+
+def error(request_id: Any, code: int, message: str) -> None:
+    send({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}})
+
+
+TOOLS = [
+    {"name": "nvim_current_context", "description": "Read the active Neovim file, cursor, selection, workspace, tabs, diagnostics, and dirty state.", "inputSchema": {"type": "object", "properties": {"include_selection_text": {"type": "boolean"}, "include_buffer_text": {"type": "boolean"}}, "additionalProperties": False}},
+    {"name": "nvim_current_buffer_text", "description": "Read the active Neovim buffer from memory, including unsaved edits.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "nvim_diagnostics", "description": "Read diagnostics for the active Neovim file.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "nvim_open_buffers", "description": "List Neovim open file buffers.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+]
+
+
+def load_state() -> dict[str, Any]:
+    try:
+        if STATE_PATH.stat().st_size > MAX_STATE_BYTES:
+            raise ValueError("Neovim context state is unexpectedly large")
+        state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError("Neovim has not published context yet") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read Neovim context: {exc}") from exc
+    if not isinstance(state, dict) or state.get("version") != 1:
+        raise ValueError("Neovim context state has an unsupported format")
+    return state
+
+
+def call_tool(name: str, arguments: dict[str, Any]) -> Any:
+    state = load_state()
+    if name == "nvim_current_context":
+        value = dict(state)
+        if not arguments.get("include_selection_text", False):
+            selection = dict(value.get("selection") or {})
+            selection.pop("text", None)
+            value["selection"] = selection
+            if isinstance(value.get("activeFile"), dict):
+                value["activeFile"] = dict(value["activeFile"])
+                value["activeFile"].pop("activeSelectionContent", None)
+        if not arguments.get("include_buffer_text", False):
+            buffer = dict(value.get("buffer") or {})
+            buffer.pop("text", None)
+            value["buffer"] = buffer
+        return value
+    if name == "nvim_current_buffer_text":
+        return {"path": (state.get("current") or {}).get("path"), "modified": (state.get("current") or {}).get("modified", False), "buffer": state.get("buffer", {})}
+    if name == "nvim_diagnostics":
+        return {"path": (state.get("current") or {}).get("path"), "diagnostics": state.get("diagnostics", [])}
+    if name == "nvim_open_buffers":
+        return {"buffers": state.get("openTabs", [])}
+    raise ValueError(f"Unknown tool: {name}")
+
+
+def handle(message: dict[str, Any]) -> None:
+    method = message.get("method")
+    request_id = message.get("id")
+    if method == "notifications/initialized":
+        return
+    if method == "initialize":
+        params = message.get("params") or {}
+        return send({"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": params.get("protocolVersion", "2025-03-26"), "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "nvim-context-ipc", "version": "0.2.0"}}})
+    if method == "ping":
+        return result(request_id, {})
+    if method == "tools/list":
+        return send({"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}})
+    if method == "tools/call":
+        params = message.get("params") or {}
+        try:
+            return result(request_id, call_tool(params.get("name", ""), params.get("arguments") or {}))
+        except ValueError as exc:
+            return send({"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": str(exc)}], "isError": True}})
+    if request_id is not None:
+        error(request_id, -32601, f"Method not found: {method}")
+
+
+def main() -> None:
+    for line in sys.stdin:
+        try:
+            message = json.loads(line)
+            if not isinstance(message, dict):
+                raise ValueError("JSON-RPC message must be an object")
+            handle(message)
+        except json.JSONDecodeError:
+            error(None, -32700, "Parse error")
+        except Exception as exc:
+            error(None, -32603, f"Internal error: {exc}")
+
+
+if __name__ == "__main__":
+    main()

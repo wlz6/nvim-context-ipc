@@ -41,6 +41,18 @@ executeCode: persistent worker evaluates 2 + 3
 - Claude WebSocket/MCP 和 Codex IDE IPC 都是私有协议，兼容性必须随 CLI/扩展版本复测；
 - `dsh` 在本机项目和 Neovim 配置中没有找到可识别的接口或命令，因此尚未加入专用适配器。
 
+### 2026-08-21 — 替换旧 stdio MCP
+
+为完整替换旧的 `wlz6/nvim-context-mcp`，新增 `bin/nvim-context-ipc-mcp`：它读取新的 Neovim 私有快照 `~/.cache/nvim-context-ipc/context.json`，提供只读的当前 context、buffer、diagnostics 和 open buffers 工具。Neovim 发布器现在同时服务原生 Codex/Claude provider 和该 bridge，快照使用临时文件 rename，目录/文件权限分别为 `0700`/`0600`。
+
+已完成的本机配置迁移：
+
+- 删除旧 Neovim `config.nvim_context_mcp` 加载入口；
+- 加入 `/home/sanzenin/test/nvim-context-ipc` 的 lazy.nvim 本地插件配置；
+- Codex `nvim-context` 从旧 wrapper 改为新 `bin/nvim-context-ipc-mcp`；
+- Claude Code `nvim-context` 从旧 wrapper 改为新 `bin/nvim-context-ipc-mcp`；
+- GitHub 旧仓库 `wlz6/nvim-context-mcp` 的删除已发起，但当前 token 缺少 `delete_repo` scope，等待设备授权。
+
 > 项目实现状态：开发中，当前仓库已经包含可运行的 Neovim Lua provider。本文中的协议研究仍然保留作兼容性依据；“实现状态”与“当前已验证”小节以源码和本机测试结果为准。
 
 ## 当前实现
