@@ -103,7 +103,7 @@ codex = {
 
 如果手动从 shell 启动 Claude Code，请使用 `claude --ide`。Codex 和 Neovim 必须运行在同一个 WSL 环境中。
 
-如果 Claude 连接异常，先执行 `:NvimContextStop`，再执行 `:NvimContextStart`，然后在 Claude 中重新运行 `/ide`；`:NvimContextStatus` 应显示 `claude.clients=1`。同一 workspace 同时只保留一个 Neovim IDE provider。
+插件更新后请先完全重启 Neovim 以加载新的 Lua 模块；运行期间仅需重连时，可执行 `:NvimContextStop`，再执行 `:NvimContextStart`，然后在 Claude 中重新运行 `/ide`。`:NvimContextStatus` 应显示 `claude.clients=1`。同一 workspace 同时只保留一个 Neovim IDE provider。
 
 ## Claude 工具
 
