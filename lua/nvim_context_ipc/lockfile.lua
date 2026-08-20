@@ -33,6 +33,10 @@ function M.create(opts, port, token)
     pid = vim.fn.getpid(),
     workspaceFolders = opts.workspace_folders,
     ideName = opts.ide_name or "Neovim",
+    -- Claude Code 2.1.x selects the transport from these fields. Keep the
+    -- older transport field for clients that still read the legacy schema.
+    useWebSocket = true,
+    runningInWindows = vim.fn.has("win32") == 1,
     transport = "ws",
     authToken = generated,
   }

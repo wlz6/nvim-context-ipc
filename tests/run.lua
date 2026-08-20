@@ -41,6 +41,26 @@ test("WebSocket handshake validates the Claude token", function()
   assert(rejected == nil)
 end)
 
+test("Claude lock file advertises the WebSocket transport", function()
+  local lockfile = require("nvim_context_ipc.lockfile")
+  local directory = vim.fn.tempname()
+  local path = assert(lockfile.create({
+    lock_dir = directory,
+    workspace_folders = { "/tmp/nvim-context-ipc" },
+    ide_name = "Neovim",
+  }, 43123))
+  local data = vim.json.decode(table.concat(vim.fn.readfile(path), "\n"))
+  assert(data.useWebSocket == true, "Claude lock file must set useWebSocket=true")
+  assert(data.runningInWindows == false, "Claude lock file must set runningInWindows=false")
+  vim.fn.delete(directory, "rf")
+end)
+
+test("Claude tool schemas encode empty properties as objects", function()
+  local claude = require("nvim_context_ipc.claude")
+  local encoded = vim.json.encode({ tools = claude._all_tools() })
+  assert(not encoded:find('"properties":%[%]'), "empty MCP properties must encode as an object")
+end)
+
 test("Context snapshot uses active in-memory buffer", function()
   local context = require("nvim_context_ipc.context")
   local buffer = vim.api.nvim_get_current_buf()

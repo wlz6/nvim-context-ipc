@@ -2,6 +2,13 @@
 
 > 本文件是开发文档。README.md 只保留安装、配置和日常使用说明；协议研究、架构决策、测试记录和迭代日志统一维护在这里。
 
+### 2026-08-21 — Claude Code 2.1.226 WebSocket 兼容修复
+
+- 根据本机 Claude Code 2.1.226 的 IDE discovery 逻辑，lock file 除了旧版 `transport: "ws"` 外，还必须声明 `useWebSocket: true`；否则 CLI 会按 SSE 路径选择 provider。
+- 补充 `runningInWindows` 字段，保留 `transport` 以兼容仍读取旧 schema 的客户端。
+- 修复 MCP `tools/list` 的空 schema：Lua 空表默认编码为 JSON 数组 `[]`，Claude 需要对象 `{}`，现在统一使用 `vim.empty_dict()`。
+- 新增 lock schema 和 tool schema 回归测试；使用真实 Claude Code + headless Neovim 验证 WebSocket 连接、`initialize` 和 `tools/list` 均成功，且不再出现 `tools/list failed`。
+
 ### 2026-08-21 — Codex/Claude 原生连接故障修复
 
 - `/home/sanzenin/.codex/ipc/ipc.sock` 可能残留为“文件存在但连接被拒绝”的陈旧 Unix socket。Codex provider 现在只在 `sockconnect` 失败且文件类型确实为 socket 时清理它；活动 socket、普通文件和其他进程拥有的 socket 都不会被覆盖。
@@ -742,10 +749,13 @@ AHP 的模型是：Agent Host 持有会话的权威状态，客户端通过 JSON
 workspaceFolders?: string[]
 pid?: number
 ideName?: string
+useWebSocket?: boolean
 transport?: "ws" | "sse"
 runningInWindows?: boolean
 authToken?: string
 ```
+
+上面的字段来自非官方源码参考；本机 Claude Code 2.1.226 的实际选择逻辑优先读取 `useWebSocket`，因此当前 provider 同时写入 `useWebSocket: true`、`runningInWindows` 和旧版 `transport`。
 
 对应的实现路径和职责如下：
 
