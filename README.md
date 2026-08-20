@@ -2,8 +2,6 @@
 
 让 Neovim 同时为 Codex CLI 和 Claude Code 提供 IDE context：当前文件、选区、打开的文件、workspace、diagnostics，以及 Claude 的文件操作和 native diff。
 
-协议研究、实现细节、测试记录和每轮开发日志见 [DEVELOPMENT.md](DEVELOPMENT.md)。
-
 ## 安装
 
 以 lazy.nvim 为例：
