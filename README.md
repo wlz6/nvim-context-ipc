@@ -26,7 +26,7 @@
 - 文件打开、保存、diff 和关闭 tab 可用；
 - `executeCode` 默认关闭，避免客户端执行任意代码；启用后优先使用 Jupyter kernel，没有 `jupyter_client` 时降级为持久 Python worker。
 - 只读 stdio MCP bridge：`bin/nvim-context-ipc-mcp`，供需要显式 MCP 配置的 Codex/Claude 会话读取同一份内存快照。
-- dsh IDE IPC：作为 client 连接独立的 `dsh-ide-ipc` 插件，默认 socket 为 `~/.cache/nvim-context-ipc/dsh.sock`；通过长连接注册 Neovim、workspace 和当前文件，并实时发送 context update。
+- dsh IDE IPC：作为 client 连接独立的 `dsh-ide-ipc` 插件，Linux/macOS/WSL 默认使用 `~/.cache/nvim-context-ipc/dsh.sock`，Windows 默认使用 `\\.\pipe\dsh-ide-ipc`；通过长连接注册 Neovim、workspace 和当前文件，并实时发送 context update。
 
 ## 配置
 
@@ -70,7 +70,7 @@ dsh plugin --profile web add github:wlz6/dsh-ide-ipc
 
 启动 profile 后，dsh 插件作为 socket server 注册 `ide_list`、`ide_context`、`ide_open_file`、`ide_save_document` 和 `ide_open_diff`。Nvim 作为长连接 client 主动注册并发送实时状态，工具请求仍受 Nvim 的 `permissions` 和 workspace 路径限制保护。多个 IDE 同时连接时，工具用 `ide_id` 或 `workspace` 路由。
 
-两边需要使用相同 socket 路径。Nvim 侧：
+两边需要使用相同 IPC 路径。Nvim 侧（Windows 可省略 `socket_path` 使用 named pipe 默认值）：
 
 ```lua
 dsh = {
@@ -144,7 +144,7 @@ Claude 启动或重连时产生的短暂 `ECONNRESET` 属于 peer disconnect，�
 - Neovim 0.10+（当前开发环境为 0.12.4）；
 - Unix/WSL：Codex direct socket 和 router；
 - Claude provider 需要支持 `vim.uv`/`vim.loop` 的 Neovim；
-- dsh provider 作为 Unix domain socket client；Windows Named Pipe 适配尚未实现。
+- dsh provider 作为 Unix domain socket 或 Windows Named Pipe client；Codex direct provider 仍只支持 Unix socket。
 - `executeCode` 需要 Python；Jupyter kernel 需要 `jupyter_client`。
 
 Codex IDE IPC 和 Claude IDE MCP 都属于目标客户端的私有/非稳定接口。使用 WSL 时，Neovim 与 Codex/Claude CLI 应运行在同一个 WSL 环境；跨 Windows/WSL 不会自动打通 Unix socket。

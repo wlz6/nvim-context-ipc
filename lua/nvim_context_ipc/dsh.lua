@@ -14,6 +14,7 @@ local state = {
 }
 
 local function default_socket_path()
+  if vim.fn.has("win32") == 1 then return [[\\.\pipe\dsh-ide-ipc]] end
   return util.normalize_path("~/.cache/nvim-context-ipc/dsh.sock")
 end
 

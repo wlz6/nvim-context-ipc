@@ -4,6 +4,17 @@ local util = require("nvim_context_ipc.util")
 local uv = util.uv
 local M = {}
 local unpack_args = table.unpack or unpack
+local WINDOWS_PIPE_PREFIX = [[\\.\pipe\]]
+local WINDOWS_PIPE_PREFIX_EXTENDED = [[\\?\pipe\]]
+
+local function is_named_pipe(path)
+  return type(path) == "string" and (path:sub(1, #WINDOWS_PIPE_PREFIX) == WINDOWS_PIPE_PREFIX or path:sub(1, #WINDOWS_PIPE_PREFIX_EXTENDED) == WINDOWS_PIPE_PREFIX_EXTENDED)
+end
+
+local function normalize_client_path(path)
+  if is_named_pipe(path) then return path end
+  return util.normalize_path(path)
+end
 
 local Server = {}
 Server.__index = Server
@@ -207,10 +218,7 @@ end
 
 function Client:start()
   if self.started then return true end
-  if vim.fn.has("win32") == 1 then
-    return false, self.name .. " Unix socket mode is not implemented on Windows in this release"
-  end
-  local path = util.normalize_path(self.opts.socket_path)
+  local path = normalize_client_path(self.opts.socket_path)
   if not path then return false, self.name .. " socket_path is invalid" end
   local pipe = uv.new_pipe(false)
   if not pipe then return false, "could not create " .. self.name .. " pipe" end
